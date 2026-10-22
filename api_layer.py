@@ -202,6 +202,24 @@ class APISimulator:
     def stdcall_args(s, name):
         return s.STDCALL_ARGS.get(name, 0)
 
+    VARARG_FUNCS = {"printf", "_printf", "printf_s", "fprintf", "fprintf_s", "vfprintf",
+                    "vprintf", "sprintf", "sprintf_s", "snprintf", "_snprintf", "vsprintf",
+                    "vsnprintf", "_vsnprintf", "_vsnprintf_s", "wsprintfA", "wprintf",
+                    "printf_l", "fprintf_l", "sprintf_l", "snprintf_l", "_scprintf"}
+
+    def is_varargs(s, name):
+        return name in s.VARARG_FUNCS
+
+    VARARG_FMT_SLOT = {"printf": 0, "_printf": 0, "printf_s": 0, "wprintf": 0,
+                       "printf_l": 0, "wsprintfA": 0, "_scprintf": 0,
+                       "fprintf": 1, "fprintf_s": 1, "fprintf_l": 1, "vfprintf": 1,
+                       "vprintf": 0, "sprintf": 1, "sprintf_s": 2, "sprintf_l": 1,
+                       "vsprintf": 1, "vsnprintf": 2, "_vsnprintf": 2, "_vsnprintf_s": 2,
+                       "snprintf": 2, "_snprintf": 2, "snprintf_l": 2}
+
+    def vararg_fmt_slot(s, name):
+        return s.VARARG_FMT_SLOT.get(name, 0)
+
     def _reg(s):
         A={"VirtualProtect":s._VirtualProtect,"VirtualQuery":s._VirtualQuery,"TlsGetValue":s._TlsGetValue,"TlsSetValue":s._TlsSetValue,"ExitProcess":s._ExitProcess,"GetStdHandle":s._GetStdHandle,"WriteFile":s._WriteFile,"ReadFile":s._ReadFile,"WriteConsoleA":s._WriteConsoleA,"ReadConsoleA":s._ReadConsoleA,"__iob_func":s._iob_func_impl,"fwrite":s._fwrite_impl,"vfprintf":s._vfprintf_impl,"malloc":s._malloc,"free":s._free,"abort":s._abort_impl,"exit":s._exit_impl,"__getmainargs":s._getmainargs,"_initterm":s._initterm,"EnterCriticalSection":s.ntdll.RtlEnterCriticalSection,"LeaveCriticalSection":s.ntdll.RtlLeaveCriticalSection,"InitializeCriticalSection":s.ntdll.RtlInitializeCriticalSection,"DeleteCriticalSection":s.ntdll.RtlDeleteCriticalSection,"GetLastError":s.ntdll.RtlGetLastWin32Error,"SetLastError":s.ntdll.RtlSetLastWin32Error,"Sleep":s._Sleep,"GetTickCount":s._GetTickCount,"QueryPerformanceCounter":s._QueryPerformanceCounter,"QueryPerformanceFrequency":s._QueryPerformanceFrequency,"GetCommandLineA":s._GetCommandLineA,"GetCommandLineW":s._GetCommandLineW,"GetEnvironmentStringsA":s._GetEnvironmentStringsA,"GetEnvironmentStringsW":s._GetEnvironmentStringsW,"FreeEnvironmentStringsA":s._FreeEnvironmentStringsA,"FreeEnvironmentStringsW":s._FreeEnvironmentStringsW,"GetSystemTime":s._GetSystemTime,"GetLocalTime":s._GetLocalTime,"GetSystemTimeAsFileTime":s._GetSystemTimeAsFileTime,"GetCurrentProcess":s._GetCurrentProcess,"GetCurrentProcessId":s._GetCurrentProcessId,"GetCurrentThread":s._GetCurrentThread,"GetCurrentThreadId":s._GetCurrentThreadId,"GetProcessHeap":s._GetProcessHeap,"HeapAlloc":s._HeapAlloc,"HeapFree":s._HeapFree,"HeapReAlloc":s._HeapReAlloc,"HeapSize":s._HeapSize,"GetModuleHandleA":s._GetModuleHandleA,"GetModuleHandleW":s._GetModuleHandleW,"GetProcAddress":s._GetProcAddress,"LoadLibraryA":s._LoadLibraryA,"LoadLibraryW":s._LoadLibraryW,"FreeLibrary":s._FreeLibrary,"SetUnhandledExceptionFilter":s._SetUnhandledExceptionFilter,"MultiByteToWideChar":s._MultiByteToWideChar,"WideCharToMultiByte":s._WideCharToMultiByte,"IsDBCSLeadByteEx":s._IsDBCSLeadByteEx,"__C_specific_handler":s.__C_specific_handler,"___lc_codepage_func":s.___lc_codepage_func,"___mb_cur_max_func":s.___mb_cur_max_func,"__initenv":s.__initenv,"__set_app_type":s.__set_app_type,"__setusermatherr":s.__setusermatherr,"_amsg_exit":s._amsg_exit,"_cexit":s._cexit,"_commode":s._commode,"_errno":s._errno,"_fmode":s._fmode,"_lock":s._lock,"_onexit":s._onexit,"_unlock":s._unlock,"calloc":s._calloc,"fprintf":s._fprintf,"fputc":s._fputc,"localeconv":s._localeconv,"memcpy":s._memcpy,"memset":s._memset,"signal":s._signal,"strerror":s._strerror,"strlen":s._strlen,"strncmp":s._strncmp,"system":s._system,"wcslen":s._wcslen,
 "CreateFileA":s._CreateFileA,"CreateFileW":s._CreateFileW,"CloseHandle":s._CloseHandle,

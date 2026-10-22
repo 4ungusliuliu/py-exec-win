@@ -1,8 +1,8 @@
 import struct
 import sys
 
-from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_MODE_32
-from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
+from decoder import Cs, CS_ARCH_X86, CS_MODE_64, CS_MODE_32
+from decoder import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 
 PARITY = [1 if (bin(i).count("1") % 2 == 0) else 0 for i in range(256)]
 
@@ -557,6 +557,32 @@ class UniversalExecutor:
         if insn.operands:
             self.registers[self.sp_register] += self._gov(insn.operands[0], insn.address)
         return ra
+
+    def _lods(self, size):
+        if self.is64:
+            si, ax = "rsi", "rax"
+        else:
+            si, ax = "esi", "eax"
+        a = self._rr(si)
+        v = self._mem_read(a, size)
+        self._wr(ax, v)
+        step = size if not self.flags["DF"] else -size
+        self._wr(si, (a + step) & self.ptr_mask)
+
+    def _handle_lodsb(self, insn):
+        self._lods(1)
+
+    def _handle_lodsw(self, insn):
+        self._lods(2)
+
+    def _handle_lodsd(self, insn):
+        self._lods(4)
+
+    def _handle_lodsq(self, insn):
+        self._lods(8)
+
+    def _handle_lods(self, insn):
+        self._lods(self.ptr_size)
 
     def _handle_loop(self, insn):
         c = (self._rr(self.cx_register) - 1) & self.ptr_mask
@@ -1151,6 +1177,50 @@ class UniversalExecutor:
         else:
             self._rep_movs(insn, 4)
 
+    def _handle_movdqa(self, insn):
+        d, s = insn.operands[0], insn.operands[1]
+        if d.type == X86_OP_REG:
+            if s.type == X86_OP_REG:
+                self._xmm_set(d.reg, self._xmm_get(s.reg))
+            else:
+                a = self._gma(s, insn.address)
+                lo = self._mem_read(a, 8)
+                hi = self._mem_read(a + 8, 8)
+                self._xmm_set(d.reg, lo | (hi << 64))
+        else:
+            a = self._gma(d, insn.address)
+            v = self._xmm_get(s.reg) if s.type == X86_OP_REG else self._gov(s, insn.address)
+            self._mem_write(a, 8, v & 0xFFFFFFFFFFFFFFFF)
+            self._mem_write(a + 8, 8, (v >> 64) & 0xFFFFFFFFFFFFFFFF)
+
+    _handle_movdqu = _handle_movdqa
+
+    def _handle_pxor(self, insn):
+        d, s = insn.operands[0], insn.operands[1]
+        sv = self._xmm_get(s.reg) if s.type == X86_OP_REG else self._gov(s, insn.address)
+        dv = self._xmm_get(d.reg) if d.type == X86_OP_REG else self._gov(d, insn.address)
+        v = (dv ^ sv) & ((1 << 128) - 1)
+        if d.type == X86_OP_REG:
+            self._xmm_set(d.reg, v)
+        else:
+            a = self._gma(d, insn.address)
+            self._mem_write(a, 8, v & 0xFFFFFFFFFFFFFFFF)
+            self._mem_write(a + 8, 8, (v >> 64) & 0xFFFFFFFFFFFFFFFF)
+
+    def _handle_pshufd(self, insn):
+        d, s, imm = insn.operands[0], insn.operands[1], insn.operands[2]
+        sv = self._xmm_get(s.reg) if s.type == X86_OP_REG else self._gov(s, insn.address)
+        dw = [(sv >> (32 * i)) & 0xFFFFFFFF for i in range(4)]
+        res = 0
+        for i in range(4):
+            res |= dw[(imm.imm >> (2 * i)) & 3] << (32 * i)
+        if d.type == X86_OP_REG:
+            self._xmm_set(d.reg, res)
+        else:
+            a = self._gma(d, insn.address)
+            self._mem_write(a, 8, res & 0xFFFFFFFFFFFFFFFF)
+            self._mem_write(a + 8, 8, (res >> 64) & 0xFFFFFFFFFFFFFFFF)
+
     def _handle_movaps(self, insn):
         self._handle_movups(insn)
 
@@ -1730,7 +1800,9 @@ class UniversalExecutor:
     def _handle_frndint(self, insn):
         self._fset(0, float(round(self._fst(0))))
 
-    def _api_args(self):
+    FP_CONV = "fFeEgGaA"
+
+    def _api_args(self, target=None):
         a = []
         sp = self.registers[self.sp_register]
         if self.is64:
@@ -1738,10 +1810,71 @@ class UniversalExecutor:
                 a.append(self.registers.get(r, 0))
             for i in range(4, 24):
                 a.append(self.memory.read_qword(sp + i * 8))
+            if target is not None:
+                name = self.api.resolve_api_name(target) if self.api else ""
+                if name and getattr(self.api, "is_varargs", None) and self.api.is_varargs(name):
+                    self._reorder_varargs(a, self.api.vararg_fmt_slot(name))
         else:
             for i in range(24):
                 a.append(self.memory.read_dword(sp + i * 4))
         return a
+
+    def _reorder_varargs(self, a, fmt_slot=0):
+        fmt_slot = max(0, min(int(fmt_slot), 3))
+        try:
+            fmt = self.memory.read_string(a[fmt_slot], 4096)
+        except Exception:
+            return
+
+        def arg_at(slot, is_float):
+            if slot < 4:
+                return self.xmm[slot] if is_float else a[slot]
+            k = slot - 4
+            return a[4 + k] if 4 + k < len(a) else 0
+
+        out = []
+        slot = fmt_slot + 1
+        i = 0
+        n = len(fmt)
+        while i < n:
+            c = fmt[i]
+            if c != "%":
+                i += 1
+                continue
+            i += 1
+            if i >= n:
+                break
+            if fmt[i] == "%":
+                i += 1
+                continue
+            while i < n and fmt[i] in "-+ #0":
+                i += 1
+            if i < n and fmt[i] == "*":
+                i += 1
+                out.append(arg_at(slot, False))
+                slot += 1
+            else:
+                while i < n and fmt[i].isdigit():
+                    i += 1
+            if i < n and fmt[i] == ".":
+                i += 1
+                if i < n and fmt[i] == "*":
+                    i += 1
+                    out.append(arg_at(slot, False))
+                    slot += 1
+                else:
+                    while i < n and fmt[i].isdigit():
+                        i += 1
+            while i < n and fmt[i] in "hlLwIztjq":
+                i += 1
+            if i >= n:
+                break
+            conv = fmt[i]
+            i += 1
+            is_float = conv in self.FP_CONV
+            out.append(arg_at(slot, is_float))
+            slot += 1
+        a[fmt_slot + 1:] = out[:len(a) - fmt_slot - 1]
 
     def call_user(self, func_addr, *args):
         if not func_addr:
@@ -1809,14 +1942,14 @@ class UniversalExecutor:
 
     def _api_ret(self, target, insn):
         self.api_calls += 1
-        r = self.api.call(target, *self._api_args())
+        r = self.api.call(target, *self._api_args(target))
         self.registers[self.ax_register] = (r or 0) & self.ptr_mask
         self._api_cleanup(target)
         return self.registers[self.ip_register] + insn.size
 
     def _api_noret(self, target):
         self.api_calls += 1
-        r = self.api.call(target, *self._api_args())
+        r = self.api.call(target, *self._api_args(target))
         self.registers[self.ax_register] = (r or 0) & self.ptr_mask
         self._api_cleanup(target)
         return self._pop()
